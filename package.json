@@ -1,0 +1,23 @@
+{
+  "name": "nextbet7-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "NextBet7 WhatsApp Bot using Green API",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "nextbet7",
+    "green-api"
+  ],
+  "author": "NextBet7",
+  "license": "MIT"
+}
