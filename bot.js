@@ -1,16 +1,19 @@
 // NextBet7 WhatsApp Bot – Green API + GPT
-// npm i express axios dotenv
+// npm i express axios dotenv helmet express-rate-limit openai
 
 const express = require("express");
 const axios = require("axios");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
 
 const { generateSmartReply } = require("./ai");
 const { getPromos } = require("./promos");
+const { faq } = require("./faq");
 
 class Nextbet7GreenAPIBot {
   constructor() {
-    // ===== Green API creds (תוודא/י שה-env קיים בענן) =====
+    // ===== Green API creds =====
     this.instanceId =
       process.env.GREEN_API_INSTANCE_ID ||
       process.env.GREENAPI_INSTANCE_ID ||
@@ -21,22 +24,38 @@ class Nextbet7GreenAPIBot {
       process.env.GREENAPI_API_TOKEN ||
       ""; // טוקן ארוך של Green-API
 
-    // Green API base URL (פורמט דומיין לפי האינסטנס)
+    // Green API base URL
     this.apiUrl = `https://${this.instanceId}.api.greenapi.com/waInstance${this.instanceId}`;
 
-    // ===== In-memory state =====
-    this.depositTeamNumbers = ["972524606685"]; // דוגמה – אפשר לעדכן
+    // ===== Config & State =====
+    const depositEnv = process.env.DEPOSIT_TEAM_NUMBERS || "";
+    this.depositTeamNumbers = depositEnv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (this.depositTeamNumbers.length === 0) {
+      this.depositTeamNumbers = ["972524606685"]; // fallback
+    }
+
+    this.webhookSecret = process.env.WEBHOOK_SECRET || ""; // לא חובה, אבל מומלץ
     this.customers = new Map();
 
-    // ===== Express server =====
+    // ===== Express =====
     this.app = express();
-    this.app.use(express.json());
+    this.app.disable("x-powered-by");
+    this.app.use(helmet());
+    this.app.use(
+      rateLimit({
+        windowMs: 60 * 1000,
+        limit: 120,
+      })
+    );
+    this.app.use(express.json({ limit: "200kb" }));
 
-    this.setupWebhook();
+    this.setupRoutes();
     this.startServer();
   }
 
-  // ===== start server =====
   startServer() {
     const port = process.env.PORT || 3000;
     this.app.listen(port, () =>
@@ -44,13 +63,17 @@ class Nextbet7GreenAPIBot {
     );
   }
 
-  // ===== webhook + health =====
-  setupWebhook() {
+  setupRoutes() {
     // בריאות
     this.app.get("/health", (req, res) => res.send("ok"));
 
     // סטטוס
     this.app.get("/status", (req, res) => {
+      // אופציונלי: הגנת סטטוס בסיסמה (STATUS_TOKEN)
+      const t = process.env.STATUS_TOKEN;
+      if (t && req.headers["x-status-token"] !== t) {
+        return res.status(403).json({ error: "forbidden" });
+      }
       res.json({
         status: "NextBet7 Bot is running!",
         ts: new Date().toISOString(),
@@ -60,12 +83,20 @@ class Nextbet7GreenAPIBot {
 
     // Webhook מה-Green API
     this.app.post("/webhook", async (req, res) => {
-      // חשוב: להחזיר מהר 200 כדי לא לקבל timeouts
+      // אימות סוד (אם הוגדר)
+      if (this.webhookSecret) {
+        const secret = req.headers["x-webhook-secret"];
+        if (secret !== this.webhookSecret) {
+          console.warn("🚨 Unauthorized webhook call");
+          return res.status(403).send("Forbidden");
+        }
+      }
+
+      // חשוב: להשיב מהר
       res.status(200).send("OK");
 
       try {
         const notification = req.body;
-        // מטפלים רק בהודעת טקסט נכנסת
         if (
           notification?.typeWebhook === "incomingMessageReceived" ||
           notification?.messageData?.textMessageData
@@ -103,24 +134,30 @@ class Nextbet7GreenAPIBot {
         notification?.senderData?.sender; // בד"כ "9725...@c.us"
       if (!text || !from) return;
 
-      // זיהוי שפה פשוט: עברית אם יש תווים עבריים
+      // זיהוי שפה: עברית אם יש תווים עבריים
       const lang = /[\u0590-\u05FF]/.test(text) ? "he" : "en";
 
       // ----- חוקים קצרים (לפני GPT) -----
+
+      // תפריט
       if (/^menu|תפריט$/i.test(text)) {
         const msg =
           lang === "he"
-            ? "📋 תפריט: • 'פתח' – פתיחת משתמש • 'מבצעים' – הצגת מבצעים • 'נציג' – חיבור לנציג"
-            : "📋 Menu: • 'register' • 'promos' • 'agent'";
+            ? "📋 תפריט: • 'פתח' – פתיחת משתמש • 'מבצעים' – הצגת מבצעים • 'הפקדה' – מס' הפקדה • 'נציג' – חיבור לנציג"
+            : "📋 Menu: • 'register' • 'promos' • 'deposit' • 'agent'";
         return this.sendMessage(from, msg);
       }
 
+      // מבצעים
       if (/^מבצעים|promos?$/i.test(text)) {
         const promos = await getPromos();
         const list = promos
           .filter((p) => p.active)
           .map(
-            (p) => `• ${p.title} – ${p.short} (קוד: ${p.code || "N/A"})`
+            (p) =>
+              `• ${p.title} – ${p.short} ${p.code ? `(קוד: ${p.code})` : ""}${
+                p.link ? ` — ${p.link}` : ""
+              }`
           )
           .join("\n");
         return this.sendMessage(
@@ -132,6 +169,7 @@ class Nextbet7GreenAPIBot {
         );
       }
 
+      // פתיחת משתמש
       if (/^פתח|register|להירשם/i.test(text)) {
         return this.sendMessage(
           from,
@@ -141,13 +179,24 @@ class Nextbet7GreenAPIBot {
         );
       }
 
-      // ----- GPT + הקשר מבצעים -----
+      // הפקדה — החזרת מספרי ה-WhatsApp העדכניים מה-ENV
+      if (/^(להפקיד|deposit|הפקדה)$/i.test(text)) {
+        const list = this.depositTeamNumbers.map((n) => `• ${n}`).join("\n");
+        const he =
+          `בשמחה! כדי להתקדם עם הפקדה—שלח/י הודעה לאחד המספרים שלנו:\n${list}`;
+        const en =
+          `Sure! To proceed with a deposit—please message one of our WhatsApp numbers:\n${list}`;
+        return this.sendMessage(from, lang === "he" ? he : en);
+      }
+
+      // ----- GPT + הקשר (מבצעים + FAQ) -----
       const promos = await getPromos();
       const aiText = await generateSmartReply({
         userText: text,
         language: lang,
         promos,
         userProfile: { phone: String(from).replace("@c.us", "") },
+        faq,
       });
 
       await this.sendMessage(from, aiText);
@@ -157,5 +206,4 @@ class Nextbet7GreenAPIBot {
   }
 }
 
-// יצוא אובייקט (start.js עושה require על הקובץ הזה)
 module.exports = new Nextbet7GreenAPIBot();
