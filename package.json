@@ -1,26 +1,17 @@
 {
   "name": "nextbet7-whatsapp-bot",
   "version": "1.0.0",
-  "description": "NextBet7 WhatsApp Bot using Green API",
+  "description": "NextBet7 WhatsApp Bot – Green API + GPT + FAQ/Promos",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "node bot.js"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "express-rate-limit": "^8.1.0",
-    "helmet": "^8.1.0",
-    "openai": "^5.20.2"
-  },
-  "keywords": [
-    "whatsapp",
-    "bot",
-    "nextbet7",
-    "green-api"
-  ],
-  "author": "NextBet7",
-  "license": "MIT"
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "openai": "^4.56.0"
+  }
 }

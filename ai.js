@@ -1,71 +1,92 @@
-// ai.js — שכבת ה-GPT והלוגיקה של ניסוח תשובות חכמות
+// GPT brain – falls back to rule-based if no OPENAI_API_KEY
 const OpenAI = require("openai");
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-async function generateSmartReply({ userText, language, promos, userProfile, faq = [] }) {
-  const depositNumbers = (process.env.DEPOSIT_TEAM_NUMBERS || "")
-    .split(",").map(s => s.trim()).filter(Boolean);
+const SYS_HE = `אתה עוזר צ'אט של NextBet7. דבר/י קצר, מקצועי וחברותי. 
+כששואלים על מבצעים – תן/י כותרת קצרה וקישור. כששואלים על הפקדות – פרט/י בקצרה (אשראי/Bit/העברה/PayBox) והצע/י נציג.
+אל תבטיח/י דברים שלא קיימים. אם לא בטוח – הצע/י נציג.`;
+const SYS_EN = `You are NextBet7's friendly support bot. Be brief, professional and helpful.
+When asked about promos, list title + short note + link. For deposits, list methods (card/bank/Bit/PayBox) and offer an agent.
+If unsure, offer to connect a human agent.`;
 
-  const activePromos = (promos || []).filter(p => p.active);
-  const promoLines = activePromos.map((p, i) => {
-    const code = p.code ? ` | קוד: ${p.code}` : "";
-    const link = p.link ? ` | קישור: ${p.link}` : "";
-    return `${i + 1}. ${p.title} — ${p.short}${code}${link}`;
-  });
+function promosToBullets(promos, lang) {
+  const title = lang === "he" ? "🎁 מבצעים פעילים:" : "🎁 Active promos:";
+  const lines = promos
+    .filter((p) => p.active)
+    .map(
+      (p) =>
+        `• ${p.title} – ${p.short}${p.link ? ` (${p.link})` : ""}${
+          p.code ? ` [קוד: ${p.code}]` : ""
+        }`
+    );
+  return [title, ...(lines.length ? lines : [lang === "he" ? "אין כרגע." : "None right now."])].join(
+    "\n"
+  );
+}
 
-  const faqLinesHe = (faq || []).map((f,i)=>`${i+1}. שאלה: ${f.q}\n   תשובה: ${f.a}`).join("\n");
-  const faqLinesEn = (faq || []).map((f,i)=>`${i+1}. Q: ${f.q_en || f.q}\n   A: ${f.a_en || f.a}`).join("\n");
+function faqToBullets(faq, lang) {
+  const title = lang === "he" ? "❓ שאלות נפוצות:" : "❓ FAQ:";
+  const lines = faq.slice(0, 6).map((q) => `• ${q.q}`);
+  return [title, ...lines].join("\n");
+}
 
-  const sysHe = `
-אתה בוט שירות לקוחות של NextBet7 בוואטסאפ.
-דבר תמיד בטון שירותי, אנושי, ברור וקצר. אל תמציא עובדות.
-אם השאלה קשורה להפקדה: הפנה למספרים המורשים בלבד: ${depositNumbers.join(", ")}.
-מבצעים פעילים:
-${promoLines.length ? promoLines.join("\n") : "אין כרגע מבצעים פעילים."}
+async function generateSmartReply({ userText, language, promos, faq, depositTeamNumbers, userProfile }) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) {
+    // fallback rule-based
+    const prefix = language === "he" ? "תודה! " : "Thanks! ";
+    return (
+      prefix +
+      "קיבלתי את ההודעה שלך. הנה תקציר שימושי:\n\n" +
+      promosToBullets(promos, language) +
+      "\n\n" +
+      faqToBullets(faq, language) +
+      "\n\n" +
+      (language === "he"
+        ? `לשיחה עם נציג: ${depositTeamNumbers.map((n) => `https://wa.me/${n}`).join(", ")}`
+        : `Talk to an agent: ${depositTeamNumbers.map((n) => `https://wa.me/${n}`).join(", ")}`)
+    );
+  }
 
-שאלות תשובות נפוצות:
-${faqLinesHe || "—"}
+  const openai = new OpenAI({ apiKey: key });
 
-מספר הלקוח (אם צריך): ${userProfile?.phone || "לא ידוע"}.
-`.trim();
+  const sys = language === "he" ? SYS_HE : SYS_EN;
+  const context =
+    promosToBullets(promos, language) +
+    "\n\n" +
+    faqToBullets(faq, language) +
+    `\n\nUser phone: ${userProfile?.phone || "unknown"}`;
 
-  const sysEn = `
-You are NextBet7's WhatsApp assistant.
-Be friendly, concise, and accurate. Do not invent facts.
-For deposits, direct users ONLY to: ${depositNumbers.join(", ")}.
-Active promotions:
-${promoLines.length ? promoLines.join("\n") : "No active promotions at the moment."}
-
-Common Q&A:
-${faqLinesEn || "—"}
-
-Customer phone (if relevant): ${userProfile?.phone || "unknown"}.
-`.trim();
-
-  const system = language === "he" ? sysHe : sysEn;
-  const userPrompt =
-    language === "he"
-      ? `פניית לקוח:\n"${userText}"\nענה בעברית, 2–5 שורות, ידידותי ומדויק.`
-      : `User says:\n"${userText}"\nReply in English, 2–5 lines, friendly and precise.`;
+  const prompt =
+    (language === "he"
+      ? "ענה/י בעברית קצר ולעניין, עם טאץ' שירותי.\n\n"
+      : "Reply in short, natural English with friendly tone.\n\n") +
+    `User: "${userText}"\n\nContext:\n${context}\n\nRules: avoid over-promising; offer agent if needed.\n`;
 
   try {
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      messages: [{ role: "system", content: system }, { role: "user", content: userPrompt }],
-      temperature: 0.5,
-      max_tokens: 350,
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.4,
+      max_tokens: 280,
     });
+
+    return resp.choices?.[0]?.message?.content?.trim() || "🙏";
+  } catch (e) {
+    console.error("OpenAI error:", e.message);
+    // fallback
     return (
-      completion.choices?.[0]?.message?.content?.trim() ||
-      (language === "he" ? "מצטער/ת, לא קלטתי לגמרי. אפשר לנסח שוב?" :
-                           "Sorry, I didn’t catch that. Could you rephrase?")
+      (language === "he" ? "קיבלתי! " : "Got it! ") +
+      (language === "he"
+        ? "כרגע לא הצלחתי לגשת ל-AI. הנה מידע שימושי:\n"
+        : "Couldn't reach AI right now. Useful info:\n") +
+      "\n" +
+      promosToBullets(promos, language) +
+      "\n\n" +
+      faqToBullets(faq, language)
     );
-  } catch (err) {
-    console.error("AI error:", err?.response?.data || err.message);
-    return language === "he"
-      ? "יש כרגע עומס במערכת. נסה/י שוב רגע מאוחר יותר 🙏"
-      : "We’re a bit busy right now. Please try again shortly 🙏";
   }
 }
 
